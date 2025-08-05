@@ -1,0 +1,114 @@
+import streamlit as st
+import pandas as pd
+from datetime import datetime
+
+st.title("RCM GST & TDS Rent Payment Dashboard (Final Version)")
+
+st.write("""
+Upload an Excel/CSV file with the following columns:  
+**Party Name | Property Type | GST Registered | Monthly Rent | Landlord Type | Audited (Yes/No)**  
+""")
+
+uploaded_file = st.file_uploader("Upload Excel/CSV File", type=["xlsx", "csv"])
+
+# Detect Financial Year dynamically
+today = datetime.today()
+current_date = today.strftime("%d-%m-%Y")
+fy = "FY 2024-25" if today.year == 2025 and today.month <= 3 else "FY 2025-26"
+
+if uploaded_file:
+    # Read the uploaded file
+    df = pd.read_csv(uploaded_file) if uploaded_file.name.endswith(".csv") else pd.read_excel(uploaded_file)
+
+    # Validate required columns
+    required_cols = ["Party Name", "Property Type", "GST Registered", "Monthly Rent", "Landlord Type", "Audited (Yes/No)"]
+    if not all(col in df.columns for col in required_cols):
+        st.error(f"File must contain columns: {', '.join(required_cols)}")
+    else:
+        # Prepare output lists
+        rcm_gst_list, cgst_list, sgst_list = [], [], []
+        tds_list, tds_section_list, net_payable_list = [], [], []
+
+        # Determine TDS thresholds
+        threshold_194i = 240000 if fy == "FY 2024-25" else 600000
+
+        for _, row in df.iterrows():
+            rent = float(row["Monthly Rent"])
+            property_type = str(row["Property Type"]).strip().lower()
+            gst_reg = str(row["GST Registered"]).strip().lower()
+            landlord_type = str(row["Landlord Type"]).strip().lower()
+            audited = str(row["Audited (Yes/No)"]).strip().lower()
+
+            # --- GST RCM Calculation ---
+            rcm_gst = 0
+            if property_type == "residential" and gst_reg == "no":
+                rcm_gst = rent * 0.18
+            elif property_type == "commercial" and gst_reg == "no":
+                rcm_gst = rent * 0.18
+
+            cgst = rcm_gst / 2
+            sgst = rcm_gst / 2
+
+            # --- TDS Calculation ---
+            tds = 0
+            tds_section = "N/A"
+            annual_rent = rent * 12
+
+            # 194IB: Individual Non-Audited
+            if landlord_type == "individual" and audited == "no":
+                if rent > 50000:  # Threshold per month
+                    tds = rent * 0.05
+                    tds_section = "194IB (5%)"
+
+            # 194I: Company or Audited Individual
+            else:
+                # FY 24-25 → annual threshold 2.4L; FY 25-26 → monthly 50k (6L annual)
+                if rent > 50000 or annual_rent > threshold_194i:
+                    tds = rent * 0.10
+                    tds_section = "194I (10%)"
+
+            net_payable = rent - tds
+
+            # Append results
+            rcm_gst_list.append(rcm_gst)
+            cgst_list.append(cgst)
+            sgst_list.append(sgst)
+            tds_list.append(tds)
+            tds_section_list.append(tds_section)
+            net_payable_list.append(net_payable)
+
+        # Add calculated columns
+        df["Calculation Date"] = current_date
+        df["Financial Year"] = fy
+        df["RCM GST"] = rcm_gst_list
+        df["CGST"] = cgst_list
+        df["SGST"] = sgst_list
+        df["TDS Section"] = tds_section_list
+        df["TDS"] = tds_list
+        df["Net Payable"] = net_payable_list
+
+        # Reorder columns to place Date & FY first
+        cols = ["Calculation Date", "Financial Year"] + [col for col in df.columns if col not in ["Calculation Date", "Financial Year"]]
+        df = df[cols]
+
+        # Display results
+        st.subheader(f"Calculation Result ({fy})")
+        st.dataframe(df)
+
+        # Summary
+        st.write(f"**Total Rent:** ₹{df['Monthly Rent'].sum():,.2f}")
+        st.write(f"**Total RCM GST:** ₹{df['RCM GST'].sum():,.2f}")
+        st.write(f"**Total CGST:** ₹{df['CGST'].sum():,.2f}")
+        st.write(f"**Total SGST:** ₹{df['SGST'].sum():,.2f}")
+        st.write(f"**Total TDS Deducted:** ₹{df['TDS'].sum():,.2f}")
+
+        # Downloadable Excel
+        output_file = "RCM_TDS_Rent_Report.xlsx"
+        df.to_excel(output_file, index=False)
+        with open(output_file, "rb") as file:
+            st.download_button(
+                label="Download Excel Report",
+                data=file,
+                file_name=output_file,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            )
